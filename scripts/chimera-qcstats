@@ -1,0 +1,31 @@
+import datetime
+import time
+
+import ephem
+import matplotlib.pyplot as plt
+from matplotlib import ticker
+
+from chimera_qc.controllers.model import Session
+
+session = Session()
+
+plt.ion()
+
+def format_date(date, pos):
+    print ephem.date(date).__str__().split(' ')[1].rpartition(':')[0]
+    return ephem.date(date).__str__().split(' ')[1].rpartition(':')[0]
+
+
+# while 1:
+
+# Compute next sunset and next sunrise
+time_offset = 1 if (0 <= datetime.datetime.now().hour < 12) else 0
+
+results = session.execute("select * from image_statistics where date_obs like '2017-02-18%'").fetchall()
+plt.figure(1)
+plt.clf()
+plt.plot([datetime.datetime.strptime(r['date_obs'], "%Y-%m-%d %H:%M:%S.%f") for r in results],
+         [r['fwhm_avg'] for r in results], '.')
+plt.gca().xaxis.set_major_formatter(ticker.FuncFormatter(format_date))
+    # plt.show()
+    # time.sleep(10)
