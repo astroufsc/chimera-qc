@@ -1,12 +1,16 @@
-import os
 import datetime
 import json
+import os
+import threading
+from tempfile import mktemp
 
 import numpy as np
+import requests
 from chimera.core.callback import callback
 from chimera.core.chimeraobject import ChimeraObject
 from chimera.core.manager import Manager
 from chimera.interfaces.camera import CameraStatus
+from chimera.util.image import Image
 
 from chimera_qc.controllers.model import Session, ImageStatistics
 
@@ -39,32 +43,59 @@ from chimera_qc.controllers.model import Session, ImageStatistics
 
 
 class CameraCallbacks(object):
-    def __init__(self, localManager, sex_params):
+    def __init__(self, localManager, sex_params, filters):
         self.sex_params = sex_params
-        self.stats = []
+        # self.stats = []
+        self._threadList = []
 
         @callback(localManager)
         def CamerareadoutComplete(proxy, status):
-            if status == CameraStatus.OK and proxy["IMAGETYP"].upper().rstrip() == "OBJECT" and \
-                            proxy["SHUTTER"].upper().rstrip() == "OPEN":
-                print proxy.filename(), proxy.keys(), status
-                extract = proxy.extract(self.sex_params)
-                stats = np.array([[data["CLASS_STAR"], data["FLAGS"], data["FWHM_IMAGE"], data["BACKGROUND"]] for data in extract])
+            p = threading.Thread(target=self.run_stats, args=(proxy, status))
+            # self._threadList.append(p)
+            p.start()
+
+        self.CamerareadoutCompleteClbk = CamerareadoutComplete
+
+    def run_stats(self, proxy, status):
+        if status == CameraStatus.OK and proxy["IMAGETYP"].upper().rstrip() == "OBJECT" and \
+                        proxy["SHUTTER"].upper().rstrip() == "OPEN":
+
+            print proxy.filename(), proxy.keys(), status, proxy.http(), status
+
+            # TODO: Make this work locally too.
+            tmpfile = mktemp()
+            r = requests.get(proxy.http(), stream=True)
+            with open(tmpfile, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=1024):
+                    if chunk:  # filter out keep-alive new chunks
+                        f.write(chunk)
+            img = Image.fromFile(tmpfile)
+            p = self.sex_params
+            p.update({"CATALOG_NAME": mktemp()})
+            extract = img.extract(p)
+            os.unlink(tmpfile)
+            # else:
+            # extract = proxy.extract(self.sex_params)
+
+            if len(extract) > 0:  # Only go ahead if at least one object was detected
+                stats = np.array(
+                    [[data["CLASS_STAR"], data["FLAGS"], data["FWHM_IMAGE"], data["BACKGROUND"]] for data in
+                     extract])
                 mask = np.bitwise_and(stats[:, 0] > 0.8, stats[:, 1] == 0)
-                s = [datetime.datetime.strptime(proxy["DATE-OBS"], "%Y-%m-%dT%H:%M:%S.%f"),
-                     proxy.filename(), np.average(stats[:, 2][mask]), np.std(stats[:, 2][mask]),
-                     np.average(stats[:, 3][mask]), mask.sum()]
+                fff = proxy["FILTER"]
+                # fff = "R"
                 session = Session()
                 try:
-                    log = ImageStatistics(date_obs=s[0], filename=s[1], fwhm_avg=s[2], fwhm_std=s[3], background=s[4],
-                                          npts=s[5])
+                    log = ImageStatistics(
+                        date_obs=datetime.datetime.strptime(proxy["DATE-OBS"], "%Y-%m-%dT%H:%M:%S.%f"),
+                        filename=proxy.filename(), filter=fff, fwhm_avg=np.average(stats[:, 2][mask]),
+                        fwhm_std=np.std(stats[:, 2][mask]), background=np.average(stats[:, 3][mask]), npts=mask.sum(),
+                        exptime=proxy["EXPTIME"])
                     session.add(log)
                 finally:
                     session.commit()
-                self.stats.append(s)
-                print "fwhm stats:", self.stats[-1]
-
-        self.CamerareadoutCompleteClbk = CamerareadoutComplete
+                    # self.stats.append(s)
+                    # print "fwhm stats:", s  # self.stats[-1]
 
 
 class QualityControl(ChimeraObject):
@@ -82,7 +113,7 @@ class QualityControl(ChimeraObject):
 
     def __init__(self):
         ChimeraObject.__init__(self)
-        self.stats = dict()
+        # self.stats = dict()
 
     def __start__(self):
 
@@ -99,37 +130,57 @@ class QualityControl(ChimeraObject):
                                                "CLASS_STAR", "BACKGROUND"]
 
         # FIXME: This should not be hardcoded!
-        self.localManager = Manager("127.0.0.1", 9001)
+        self.localManager = Manager("192.168.50.107", 9001)
+        # self.localManager = Manager("127.0.0.1", 9001)
 
         # self._data = dict()
         # self.sched_callbacks = SchedCallbacks(self.localManager, self["scheduler"].split('/')[-1], self._data)
         #
         # self.getManager().getProxy(self["scheduler"]).actionBegin += self.sched_callbacks.SchedActionBeginClbk
         # self.getManager().getProxy(self["scheduler"]).stateChanged += self.sched_callbacks.SchedStateChangedClbk
-
-        self.camera_callbacks = CameraCallbacks(self.localManager, self._sex_params)
-        self.getManager().getProxy(self["camera"]).readoutComplete += self.camera_callbacks.CamerareadoutCompleteClbk
+        self.filters = self._getCam().getFilters()
+        self.camera_callbacks = CameraCallbacks(self.localManager, self._sex_params, self.filters)
+        self._getCam().readoutComplete += self.camera_callbacks.CamerareadoutCompleteClbk
+        self.stats = {f: {} for f in self.filters}
 
     def control(self):
-        for i_stat, stat in enumerate(self.camera_callbacks.stats):
-            if datetime.datetime.utcnow() - stat[0] > datetime.timedelta(minutes=30):
-                self.camera_callbacks.stats.pop(i_stat)
-        if len(self.camera_callbacks.stats) > 0:
-            self.stats["last_update"] = datetime.datetime.utcnow()
-            # Here I weight each image by its number of detections!
-            self.stats["fwhm_avg"] = np.average(np.array(self.camera_callbacks.stats)[:, 2],
-                                                weights=np.array(self.camera_callbacks.stats)[:, 4])
-            self.stats["background_avg"] = np.average(np.array(self.camera_callbacks.stats)[:, 4],
-                                                weights=np.array(self.camera_callbacks.stats)[:, 4])
-            self.stats["n_images"] = len(self.camera_callbacks.stats)
 
-            self.log.debug("Image statistics for past 30 minutes: n_images = %i, fwhm_avg = %3.2f, back_avg = %3.2f" % (
-                self.stats["n_images"], self.stats["fwhm_avg"], self.stats["background_avg"]))
+        session = Session()
+        for filter_id in self.filters:
+            stats = session.query(ImageStatistics).filter(ImageStatistics.filter == filter_id,
+                                                          ImageStatistics.date_obs > (
+                                                          datetime.datetime.utcnow() - datetime.timedelta(
+                                                              minutes=30)))
+
+            if stats.count() > 0:
+                self.stats[filter_id]["last_update"] = datetime.datetime.utcnow()
+                self.stats[filter_id]["fwhm_avg"] = np.average(np.array([e.fwhm_avg for e in stats]),
+                                                               weights=np.array([e.npts for e in stats]))
+                self.stats[filter_id]["background_avg"] = np.average(np.array([e.background for e in stats]),
+                                                                     weights=np.array([e.npts for e in stats]))
+                self.stats[filter_id]["n_images"] = stats.count()
+                self.log.debug(
+                    "Image statistics for past 30 minutes: filter %s, n_images = %i, fwhm_avg = %3.2f, back_avg = %3.2f" % (
+                        filter_id, self.stats[filter_id]["n_images"], self.stats[filter_id]["fwhm_avg"],
+                        self.stats[filter_id]["background_avg"]))
+
+            session.commit()
 
         return True
 
-    def image_statistics(self):
-        return self.stats
+    def image_statistics(self, minutes):
+        session = Session()
+        ret = dict()
+        for filter_id in self.filters:
+            stats = session.query(ImageStatistics).filter(ImageStatistics.filter == filter_id,
+                                                          ImageStatistics.date_obs > (
+                                                          datetime.datetime.utcnow() - datetime.timedelta(
+                                                              minutes=minutes)))
+            ret[filter_id] = dict(date_obs=[e.date_obs for e in stats],
+                                  fwhm=[e.fwhm_avg for e in stats],
+                                  background=[e.background for e in stats])
+        session.commit()
+        return ret
 
     def __stop__(self):
         pass

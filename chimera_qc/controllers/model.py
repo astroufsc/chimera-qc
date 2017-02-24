@@ -19,6 +19,8 @@ class ImageStatistics(Base):
 
     id = Column(Integer, primary_key=True)
     filename = Column(String, default="")
+    filter = Column(String, default="")
+    exptime = Column(Float, default=None)
     date_obs = Column(DateTime, default=None)
     fwhm_avg = Column(Float, default=None)
     fwhm_std = Column(Float, default=None)
