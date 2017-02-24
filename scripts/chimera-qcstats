@@ -1,31 +1,44 @@
-import datetime
 import time
 
-import ephem
 import matplotlib.pyplot as plt
+import numpy as np
+import pylab
+from chimera.core.manager import Manager
 from matplotlib import ticker
 
-from chimera_qc.controllers.model import Session
 
-session = Session()
-
-plt.ion()
-
-def format_date(date, pos):
-    print ephem.date(date).__str__().split(' ')[1].rpartition(':')[0]
-    return ephem.date(date).__str__().split(' ')[1].rpartition(':')[0]
+def format_date(x, pos=None):
+    return pylab.num2date(x).strftime('%H:%m:%S')
 
 
-# while 1:
+flatten = lambda l: [item for sublist in l for item in sublist]
 
-# Compute next sunset and next sunrise
-time_offset = 1 if (0 <= datetime.datetime.now().hour < 12) else 0
+m = Manager()
+# qc = m.getProxy("127.0.0.1:7666/QualityControl/qc")
+qc = m.getProxy("192.168.50.107:7666/QualityControl/qc")
 
-results = session.execute("select * from image_statistics where date_obs like '2017-02-18%'").fetchall()
-plt.figure(1)
-plt.clf()
-plt.plot([datetime.datetime.strptime(r['date_obs'], "%Y-%m-%d %H:%M:%S.%f") for r in results],
-         [r['fwhm_avg'] for r in results], '.')
-plt.gca().xaxis.set_major_formatter(ticker.FuncFormatter(format_date))
-    # plt.show()
-    # time.sleep(10)
+while 1:
+    stats = qc.image_statistics(60)
+    pixsize = 0.55
+
+    plt.figure(1)
+    plt.clf()
+    fwhm = []
+    for filter_id in stats.keys():
+        if len(stats[filter_id]["date_obs"]) > 0:
+            plt.plot(stats[filter_id]["date_obs"], np.array(stats[filter_id]["fwhm"]) * pixsize, '.', label=filter_id)
+            fwhm.append(np.array(stats[filter_id]["fwhm"]) * pixsize)
+            # plt.plot(stats[filter_id]["date_obs"], np.array(stats[filter_id]["background"]), '.', label=filter_id)
+
+    # plt.gca().xaxis.set_major_formatter(ticker.FuncFormatter(format_date))
+    plt.gcf().autofmt_xdate()
+    plt.legend(loc='upper center', ncol=3, fancybox=True, framealpha=0.5, numpoints=1)
+    date_global = np.array(flatten([stats[filter_id]["date_obs"] for filter_id in stats.keys()]))
+    fwhm_global = np.array(flatten([stats[filter_id]["fwhm"] for filter_id in stats.keys()])) * pixsize
+    plt.title("LATEST: %3.2f    MEDIAN: %3.2f    STDEV: %3.2f" % (
+    fwhm_global[np.argmax(date_global)], np.median(fwhm_global[fwhm_global < 3]),
+    np.std(np.array(fwhm_global[fwhm_global < 3]))))
+    plt.ylim(0, 3)
+    plt.savefig('caca.png')
+
+    time.sleep(60)
