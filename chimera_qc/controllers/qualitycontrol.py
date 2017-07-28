@@ -153,6 +153,11 @@ class QualityControl(ChimeraObject):
                     session.commit()
                     # self.stats.append(s)
                     # print "fwhm stats:", s  # self.stats[-1]
+        else:
+            self.log.debug('Image %s not good for statistics. [%s][%s]: @[%s]' % (proxy.filename(),
+                                                                                  proxy.keys(),
+                                                                                  status,
+                                                                                  proxy.http()))
 
     def _CameraReadoutCompleteClbk(self, proxy, status):
         p = threading.Thread(target=self.run_stats, args=(proxy, status))
