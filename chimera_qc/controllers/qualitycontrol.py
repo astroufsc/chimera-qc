@@ -16,14 +16,15 @@ from chimera.util.image import ImageUtil, Image
 from chimera.controllers.imageserver.util import getImageServer
 from chimera.core.exceptions import ChimeraException
 
-from chimera_qc.controllers.model import Session, ImageStatistics
+from chimera_qc.controllers.model import Session, ImageStatistics, ImageCatalog
 
 
 class QualityControl(ChimeraObject):
     __config__ = {
         "camera": "/Camera/0",
         "scheduler": "/Scheduler/0",
-        "sex_params": None  # json file, PARAMETER_LIST is overriden
+        "sex_params": None,  # json file, PARAMETER_LIST is overriden
+        "max_stars_catalog": 100,  # Maximum number of stars per image to store in the catalog (will select brightest)
     }
 
     def _getCam(self):
@@ -47,8 +48,11 @@ class QualityControl(ChimeraObject):
         else:
             self._sex_params = {}
 
-        self._sex_params['PARAMETERS_LIST'] = ["NUMBER", "XWIN_IMAGE", "YWIN_IMAGE", "FLUX_BEST", "FWHM_IMAGE", "FLAGS",
-                                               "CLASS_STAR", "BACKGROUND"]
+        self._sex_params['PARAMETERS_LIST'] = ["NUMBER",
+                                               "X_IMAGE", "Y_IMAGE", "XWIN_IMAGE", "YWIN_IMAGE",
+                                               "ALPHA_J2000", "DELTA_J2000",
+                                               "MAG_AUTO", "FLUX_AUTO", "BACKGROUND", "FWHM_IMAGE",
+                                               "FLAGS", "CLASS_STAR"]
 
         # self._data = dict()
         # self.sched_callbacks = SchedCallbacks(self.localManager, self["scheduler"].split('/')[-1], self._data)
@@ -133,10 +137,26 @@ class QualityControl(ChimeraObject):
             # extract = proxy.extract(self.sex_params)
 
             if len(extract) > 0:  # Only go ahead if at least one object was detected
+                # stats = np.array(
+                #     [[data["CLASS_STAR"], data["FLAGS"], data["FWHM_IMAGE"], data["BACKGROUND"]] for data in
+                #      extract])
                 stats = np.array(
-                    [[data["CLASS_STAR"], data["FLAGS"], data["FWHM_IMAGE"], data["BACKGROUND"]] for data in
+                    [[data["NUMBER"],
+                      data["X_IMAGE"],
+                      data["Y_IMAGE"],
+                      data["XWIN_IMAGE"],
+                      data["YWIN_IMAGE"],
+                      data["ALPHA_J2000"],
+                      data["DELTA_J2000"],
+                      data["MAG_AUTO"],
+                      data["FLUX_AUTO"],
+                      data["BACKGROUND"],
+                      data["FWHM_IMAGE"],
+                      data["FLAGS"],
+                      data["CLASS_STAR"], ] for data in
                      extract])
-                mask = np.bitwise_and(stats[:, 0] > 0.8, stats[:, 1] == 0)
+
+                mask = np.bitwise_and(stats[:, 12] > 0.8, stats[:, 11] == 0)
                 fff = "CLEAR"
                 if "FILTER" in proxy.keys():
                     fff = proxy["FILTER"]
@@ -145,10 +165,32 @@ class QualityControl(ChimeraObject):
                 try:
                     log = ImageStatistics(
                         date_obs=datetime.datetime.strptime(proxy["DATE-OBS"], "%Y-%m-%dT%H:%M:%S.%f"),
-                        filename=proxy.filename(), filter=fff, fwhm_avg=np.average(stats[:, 2][mask]),
-                        fwhm_std=np.std(stats[:, 2][mask]), background=np.average(stats[:, 3][mask]), npts=mask.sum(),
+                        filename=proxy.filename(), filter=fff, fwhm_avg=np.average(stats[:, 10][mask]),
+                        fwhm_std=np.std(stats[:, 10][mask]), background=np.average(stats[:, 9][mask]), npts=mask.sum(),
                         exptime=proxy["EXPTIME"])
                     session.add(log)
+                    session.flush()
+                    session.refresh(log)
+                    # Now add stars to the star catalog
+                    # Todo: Solve astrometry
+                    cat = []
+                    mag_sort = np.argsort(stats[:, 7])[:self['max_stars_catalog']]
+                    for data in stats[mag_sort]:
+                        cat.append(ImageCatalog(image_statistics_id=log.id,
+                                                NUMBER=data[0],
+                                                X_IMAGE=data[1],
+                                                Y_IMAGE=data[2],
+                                                XWIN_IMAGE=data[3],
+                                                YWIN_IMAGE=data[4],
+                                                ALPHA_J2000=data[5],
+                                                DELTA_J2000=data[6],
+                                                MAG_AUTO=data[7],
+                                                FLUX_AUTO=data[8],
+                                                BACKGROUND=data[9],
+                                                FWHM_IMAGE=data[10],
+                                                FLAGS=data[11],
+                                                CLASS_STAR=data[12], ))
+                    session.add_all(cat)
                 finally:
                     session.commit()
                     # self.stats.append(s)
