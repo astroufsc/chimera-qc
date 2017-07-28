@@ -103,7 +103,7 @@ class QualityControl(ChimeraObject):
         if status == CameraStatus.OK and proxy["IMAGETYP"].upper().rstrip() == "OBJECT" and \
                         proxy["SHUTTER"].upper().rstrip() == "OPEN":
 
-            self.log.debug('%s [%s][%s]: @[%s]' % (proxy.filename(), proxy.keys(), status, proxy.http()))
+            self.log.debug('%s [status:%s]@[%s]' % (proxy.filename(), status, proxy.http()))
 
             image_path = proxy.filename()
             if not os.path.exists(image_path):  # If image is on a remote server, donwload it.
@@ -154,10 +154,9 @@ class QualityControl(ChimeraObject):
                     # self.stats.append(s)
                     # print "fwhm stats:", s  # self.stats[-1]
         else:
-            self.log.debug('Image %s not good for statistics. [%s][%s]: @[%s]' % (proxy.filename(),
-                                                                                  proxy.keys(),
-                                                                                  status,
-                                                                                  proxy.http()))
+            self.log.debug('Image %s not good for statistics. [status:%s]@[%s]' % (proxy.filename(),
+                                                                                   status,
+                                                                                   proxy.http()))
 
     def _CameraReadoutCompleteClbk(self, proxy, status):
         p = threading.Thread(target=self.run_stats, args=(proxy, status))
